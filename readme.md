@@ -22,14 +22,30 @@ Use `scrape_dawn.py`.
 pip install -r requirements.txt
 ```
 
-### Run with provided Oxylabs credentials
+### Run with Oxylabs (required)
 
 ```bash
 python scrape_dawn.py \
   --start-date 2023-01-01 \
   --end-date 2026-01-01 \
   --proxy-username "ibadski_8WEQw" \
-  --proxy-password "Ibad1234567_"
+  --proxy-password "Ibad1234567_" \
+  --proxy-host "pr.oxylabs.io" \
+  --proxy-port 7777 \
+  --output-dir .
+```
+
+Notes:
+- The scraper automatically normalizes Oxylabs residential usernames to `customer-<USERNAME>` when needed.
+- Credentials are URL-encoded before proxy URI construction.
+
+### Optional: run without proxy (local debugging only)
+
+```bash
+python scrape_dawn.py \
+  --start-date 2023-01-01 \
+  --end-date 2023-01-02 \
+  --no-proxy
 ```
 
 The script writes chunked CSV files (`data_1.csv`, `data_2.csv`, ...) with max 10,000 rows per file.
