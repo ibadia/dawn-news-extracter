@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -48,6 +48,8 @@ class DawnScraper:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.session = requests.Session()
+        # Avoid inheriting proxy settings from the host environment.
+        self.session.trust_env = False
         self.session.headers.update(
             {
                 "User-Agent": (
@@ -58,13 +60,26 @@ class DawnScraper:
             }
         )
 
-        proxy_uri = (
-            f"http://{config.proxy_username}:{config.proxy_password}"
-            f"@{config.proxy_host}:{config.proxy_port}"
-        )
-        self.session.proxies = {"http": proxy_uri, "https": proxy_uri}
+        self.proxy_enabled = bool(config.proxy_username and config.proxy_password)
+        if self.proxy_enabled:
+            normalized_user = self._normalize_proxy_username(config.proxy_username)
+            proxy_user = quote(normalized_user, safe="")
+            proxy_pass = quote(config.proxy_password, safe="")
+            proxy_uri = f"http://{proxy_user}:{proxy_pass}@{config.proxy_host}:{config.proxy_port}"
+            self.session.proxies = {"http": proxy_uri, "https": proxy_uri}
 
         self._seen_urls: Set[str] = set()
+        self._proxy_auth_failed = False
+
+    @staticmethod
+    def _normalize_proxy_username(username: str) -> str:
+        """
+        Oxylabs residential proxy auth usually expects `customer-<USERNAME>`.
+        Accept either full value or bare dashboard username.
+        """
+        if username.startswith("customer-"):
+            return username
+        return f"customer-{username}"
 
     def _request_with_retry(self, url: str) -> Optional[requests.Response]:
         for attempt in range(1, self.config.max_retries + 1):
@@ -73,6 +88,15 @@ class DawnScraper:
                 response.raise_for_status()
                 return response
             except requests.RequestException as exc:
+                if "407 Proxy Authentication Required" in str(exc):
+                    self._proxy_auth_failed = True
+                    print(
+                        "[ERROR] Proxy authentication failed (HTTP 407). "
+                        "Check --proxy-username/--proxy-password and Oxylabs zone settings. "
+                        "For Residential Proxies, username should resolve to customer-<USERNAME>.",
+                        file=sys.stderr,
+                    )
+                    return None
                 if attempt == self.config.max_retries:
                     print(f"[ERROR] Failed URL after retries: {url} ({exc})", file=sys.stderr)
                     return None
@@ -159,6 +183,9 @@ class DawnScraper:
 
             archive_resp = self._request_with_retry(archive_url)
             if archive_resp is None:
+                if self._proxy_auth_failed:
+                    print("[ERROR] Stopping early due to proxy authentication failure.", file=sys.stderr)
+                    break
                 current += timedelta(days=1)
                 continue
 
@@ -234,6 +261,11 @@ def parse_args() -> Config:
     parser.add_argument("--proxy-port", type=int, default=7777)
     parser.add_argument("--proxy-username", default="ibadski_8WEQw")
     parser.add_argument("--proxy-password", default="Ibad1234567_")
+    parser.add_argument(
+        "--no-proxy",
+        action="store_true",
+        help="Disable proxy and connect directly to Dawn.",
+    )
     parser.add_argument("--delay-seconds", type=float, default=0.2)
     parser.add_argument("--max-retries", type=int, default=4)
     args = parser.parse_args()
@@ -241,14 +273,17 @@ def parse_args() -> Config:
     if args.start_date > args.end_date:
         parser.error("--start-date must be <= --end-date")
 
+    proxy_username = "" if args.no_proxy else args.proxy_username
+    proxy_password = "" if args.no_proxy else args.proxy_password
+
     return Config(
         start_date=args.start_date,
         end_date=args.end_date,
         output_dir=args.output_dir,
         proxy_host=args.proxy_host,
         proxy_port=args.proxy_port,
-        proxy_username=args.proxy_username,
-        proxy_password=args.proxy_password,
+        proxy_username=proxy_username,
+        proxy_password=proxy_password,
         delay_seconds=args.delay_seconds,
         max_retries=args.max_retries,
     )
